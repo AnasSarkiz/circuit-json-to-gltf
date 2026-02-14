@@ -1,3 +1,6 @@
+import fs from "fs/promises"
+import path from "path"
+import { fileURLToPath } from "url"
 import type {
   CoordinateTransformConfig,
   OBJMaterial,
@@ -33,18 +36,35 @@ export async function loadSTEP(
     return stepCache.get(cacheKey)!
   }
 
-  // Handle local file paths by converting to file:// URLs
-  const fetchUrl =
-    url.startsWith("/") || url.match(/^[A-Za-z]:[\\/]/) ? `file://${url}` : url
+  const isHttp = /^https?:\/\//i.test(url)
+  const isFileUrl = /^file:\/\//i.test(url)
 
-  const response = await fetch(fetchUrl)
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch STEP file: ${response.status} ${response.statusText}`,
-    )
+  let resolvedPath: string | null = null
+  let fileBuffer: Uint8Array
+
+  try {
+    if (isHttp) {
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`)
+      }
+      const buffer = await response.arrayBuffer()
+      fileBuffer = new Uint8Array(buffer)
+    } else {
+      if (isFileUrl) {
+        resolvedPath = fileURLToPath(url)
+      } else {
+        resolvedPath = path.resolve(url)
+      }
+
+      const nodeBuffer = await fs.readFile(resolvedPath)
+      fileBuffer = new Uint8Array(nodeBuffer)
+    }
+  } catch (err: any) {
+    const location = isHttp ? url : (resolvedPath ?? url)
+    const message = err?.stack || err?.message || String(err)
+    throw new Error(`Failed to load STEP file at ${location}: ${message}`)
   }
-  const buffer = await response.arrayBuffer()
-  const fileBuffer = new Uint8Array(buffer)
 
   const occt = await getOcctModule()
   const result = occt.ReadStepFile(fileBuffer, {
