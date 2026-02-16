@@ -1,27 +1,35 @@
 import type {
-  Point3,
-  OBJMesh,
-  Triangle,
   Color,
-  OBJMaterial,
   CoordinateTransformConfig,
+  OBJMaterial,
+  OBJMesh,
+  Point3,
+  Triangle,
 } from "../types"
 import {
-  transformTriangles,
   COORDINATE_TRANSFORMS,
+  transformTriangles,
 } from "../utils/coordinate-transform"
+import { resolveModelUrl } from "./resolve-model-url"
+import type { PlatformConfig } from "@tscircuit/props"
 
 const objCache = new Map<string, OBJMesh>()
 
-export async function loadOBJ(
-  url: string,
-  transform?: CoordinateTransformConfig,
-): Promise<OBJMesh> {
-  const cacheKey = `${url}:${JSON.stringify(transform ?? {})}`
+export async function loadOBJ({
+  url,
+  transform,
+  platformConfig,
+}: {
+  url: string
+  transform?: CoordinateTransformConfig
+  platformConfig?: PlatformConfig
+}): Promise<OBJMesh> {
+  const resolvedUrl = await resolveModelUrl(url, platformConfig)
+  const cacheKey = `${resolvedUrl}:${JSON.stringify(transform ?? {})}`
   if (objCache.has(cacheKey)) {
     return objCache.get(cacheKey)!
   }
-  const response = await fetch(url)
+  const response = await fetch(resolvedUrl)
   const text = await response.text()
   const mesh = parseOBJ(text, transform)
   objCache.set(cacheKey, mesh)
