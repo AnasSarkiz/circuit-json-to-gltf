@@ -4,19 +4,16 @@ import { Circuit } from "tscircuit"
 import { convertCircuitJsonToGltf } from "../../lib"
 import { getBestCameraPosition } from "../../lib/utils/camera-position"
 
-test("STEP CAD Model should be included in GLTF output", async () => {
+test("repro7: local CAD model should be included in GLTF output", async () => {
   const circuit = new Circuit()
   circuit.add(
-    <board width="10mm" height="10mm">
+    <board width="40mm" height="40mm">
       <chip
         name="U1"
         footprint="soic8"
         cadModel={
           <cadassembly>
-            <cadmodel
-              modelUrl="https://modelcdn.tscircuit.com/jscad_models/soic8.step"
-              rotationOffset={{ x: 0, y: 0, z: 180 }}
-            />
+            <cadmodel modelUrl="tests/assets/ExampleModelPin.step" />
           </cadassembly>
         }
       />
