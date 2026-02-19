@@ -7,6 +7,12 @@ import type { PcbCutout, Point, PcbBoard } from "circuit-json"
 
 export const DEFAULT_SEGMENTS = 64
 
+// Reduced segments for large hole counts to improve performance
+export const REDUCED_SEGMENTS = 16
+
+// Threshold for when to use reduced segments
+export const HOLE_COUNT_THRESHOLD = 50
+
 const toBoardSpaceVec2 = (
   point: Point,
   center: { x: number; y: number },
@@ -33,12 +39,13 @@ export const createCircularHole = (
   y: number,
   radius: number,
   thickness: number,
+  segments: number = DEFAULT_SEGMENTS,
 ): Geom3 =>
   cylinder({
     center: [x, y, 0],
     height: thickness + 1,
     radius,
-    segments: DEFAULT_SEGMENTS,
+    segments,
   })
 
 export const createCutoutGeoms = (

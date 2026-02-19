@@ -9,7 +9,7 @@ import {
   rotateZ,
   rotateX,
 } from "@jscad/modeling/src/operations/transforms"
-import { subtract } from "@jscad/modeling/src/operations/booleans"
+import { subtract, union } from "@jscad/modeling/src/operations/booleans"
 import * as geom3 from "@jscad/modeling/src/geometries/geom3"
 import measureBoundingBox from "@jscad/modeling/src/measurements/measureBoundingBox"
 import type { Geom3 } from "@jscad/modeling/src/geometries/types"
@@ -27,8 +27,11 @@ import {
   createCircularHole,
   createCutoutGeoms,
   DEFAULT_SEGMENTS,
+  HOLE_COUNT_THRESHOLD,
+  REDUCED_SEGMENTS,
 } from "./pcb-board-cutouts"
 import type { BoardCutout } from "./pcb-board-cutouts"
+import { batchedUnion } from "./batched-union"
 
 const RADIUS_EPSILON = 1e-4
 
@@ -85,13 +88,14 @@ export const createBoardOutlineGeom = (
   return geom
 }
 
-const createPillHole = (
+const createPillHoleWithSegments = (
   x: number,
   y: number,
   width: number,
   height: number,
   thickness: number,
   rotate: boolean,
+  segments: number = DEFAULT_SEGMENTS,
 ): Geom3 => {
   const minDimension = Math.min(width, height)
   const maxAllowedRadius = Math.max(0, minDimension / 2 - RADIUS_EPSILON)
@@ -100,7 +104,7 @@ const createPillHole = (
   const hole2d = roundedRectangle({
     size: [width, height],
     roundRadius,
-    segments: DEFAULT_SEGMENTS,
+    segments,
   })
   let hole3d = extrudeLinear({ height: thickness + 1 }, hole2d)
   hole3d = translate([0, 0, -(thickness + 1) / 2], hole3d)
@@ -117,6 +121,7 @@ export const createHoleGeoms = (
   thickness: number,
   holes: PcbHole[] = [],
   platedHoles: PCBPlatedHole[] = [],
+  segments: number = DEFAULT_SEGMENTS,
 ): Geom3[] => {
   const holeGeoms: Geom3[] = []
 
@@ -137,13 +142,14 @@ export const createHoleGeoms = (
       const width = rotate ? holeHeight : holeWidth
       const height = rotate ? holeWidth : holeHeight
 
-      const pillHole = createPillHole(
+      const pillHole = createPillHoleWithSegments(
         relX,
         relY,
         width,
         height,
         thickness,
         rotate,
+        segments,
       )
       holeGeoms.push(pillHole)
       continue
@@ -171,7 +177,7 @@ export const createHoleGeoms = (
       const hole2d = roundedRectangle({
         size: [holeWidth, holeHeight],
         roundRadius,
-        segments: DEFAULT_SEGMENTS,
+        segments,
       })
 
       let hole3d = extrudeLinear({ height: thickness + 1 }, hole2d)
@@ -196,7 +202,7 @@ export const createHoleGeoms = (
     if (!diameter) continue
 
     const radius = diameter / 2
-    holeGeoms.push(createCircularHole(relX, relY, radius, thickness))
+    holeGeoms.push(createCircularHole(relX, relY, radius, thickness, segments))
   }
 
   for (const plated of platedHoles) {
@@ -223,7 +229,15 @@ export const createHoleGeoms = (
       const width = rotate ? holeHeight : holeWidth
       const height = rotate ? holeWidth : holeHeight
       holeGeoms.push(
-        createPillHole(relX, relY, width, height, thickness, rotate),
+        createPillHoleWithSegments(
+          relX,
+          relY,
+          width,
+          height,
+          thickness,
+          rotate,
+          segments,
+        ),
       )
       continue
     }
@@ -232,7 +246,9 @@ export const createHoleGeoms = (
       getNumberProperty(platedRecord, "hole_diameter") ??
       getNumberProperty(platedRecord, "outer_diameter")
     if (!diameter) continue
-    holeGeoms.push(createCircularHole(relX, relY, diameter / 2, thickness))
+    holeGeoms.push(
+      createCircularHole(relX, relY, diameter / 2, thickness, segments),
+    )
   }
 
   return holeGeoms
@@ -305,11 +321,29 @@ export const createBoardMesh = (
 
   let boardGeom = createBoardOutlineGeom(board, center, thickness)
 
-  const holeGeoms = createHoleGeoms(center, thickness, holes, platedHoles)
+  // Calculate total hole count to determine if we should use reduced segments
+  const totalHoleCount = holes.length + platedHoles.length
+  const useReducedSegments = totalHoleCount > HOLE_COUNT_THRESHOLD
+  const segments = useReducedSegments ? REDUCED_SEGMENTS : DEFAULT_SEGMENTS
+
+  const holeGeoms = createHoleGeoms(
+    center,
+    thickness,
+    holes,
+    platedHoles,
+    segments,
+  )
   const cutoutGeoms = createCutoutGeoms(center, thickness, cutouts)
   const subtractGeoms = [...holeGeoms, ...cutoutGeoms]
+
   if (subtractGeoms.length > 0) {
-    boardGeom = subtract(boardGeom, ...subtractGeoms)
+    // Optimization: Union all holes/cutouts first, then perform a single subtract
+    // This is much faster than subtracting each hole individually because:
+    // 1. Each subtract operation makes the board geometry more complex
+    // 2. Union operations between simple shapes (cylinders) are fast
+    // 3. A single subtract of a complex shape is faster than N subtracts
+    const unifiedHoles = batchedUnion(subtractGeoms)
+    boardGeom = subtract(boardGeom, unifiedHoles)
   }
 
   boardGeom = rotateX(-Math.PI / 2, boardGeom)
