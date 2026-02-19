@@ -31,6 +31,7 @@ import {
   REDUCED_SEGMENTS,
 } from "./pcb-board-cutouts"
 import type { BoardCutout } from "./pcb-board-cutouts"
+import { batchedUnion } from "./batched-union"
 
 const RADIUS_EPSILON = 1e-4
 
@@ -309,35 +310,6 @@ export const createBoundingBox = (bbox: [number[], number[]]): BoundingBox => {
     min: { x: min[0]!, y: min[1]!, z: min[2]! },
     max: { x: max[0]!, y: max[1]!, z: max[2]! },
   }
-}
-
-/**
- * Batched union operation that processes geometries in chunks
- * to avoid stack overflow and improve performance
- */
-const batchedUnion = (geoms: Geom3[], batchSize = 50): Geom3 => {
-  if (geoms.length === 0) {
-    throw new Error("Cannot union empty array")
-  }
-  if (geoms.length === 1) {
-    return geoms[0]!
-  }
-
-  // Process in batches to avoid deep recursion
-  let results = [...geoms]
-  while (results.length > 1) {
-    const newResults: Geom3[] = []
-    for (let i = 0; i < results.length; i += batchSize) {
-      const batch = results.slice(i, i + batchSize)
-      if (batch.length === 1) {
-        newResults.push(batch[0]!)
-      } else {
-        newResults.push(union(...batch))
-      }
-    }
-    results = newResults
-  }
-  return results[0]!
 }
 
 export const createBoardMesh = (
