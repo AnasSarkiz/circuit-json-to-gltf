@@ -10,8 +10,6 @@ import { getBestCameraPosition } from "../../lib/utils/camera-position"
  * Target: ~880 holes = 110 DIP8 chips (8 holes each)
  * Grid: 11x10 = 110 chips
  *
- * WARNING: This test may take several minutes to complete due to
- * CSG boolean operation performance issues.
  */
 test("repro8-scale: board with ~880 plated holes", async () => {
   const circuit = new Circuit()
@@ -39,7 +37,7 @@ test("repro8-scale: board with ~880 plated holes", async () => {
   const circuitJson = await circuit.getCircuitJson()
   // Count plated holes to verify test setup
   const platedHoleCount = circuitJson.filter(
-    (item: any) => item.type === "pcb_plated_hole",
+    (item) => item.type === "pcb_plated_hole",
   ).length
   console.log(`Circuit has ${platedHoleCount} plated holes`)
   // Convert circuit to GLTF (GLB format for rendering)
