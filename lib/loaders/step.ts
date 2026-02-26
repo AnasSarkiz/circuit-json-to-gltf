@@ -14,16 +14,171 @@ import {
 import { resolveModelUrl } from "./resolve-model-url"
 
 const stepCache = new Map<string, STLMesh | OBJMesh>()
+const occtModulePromiseByKey = new Map<string, Promise<any>>()
+const OCCT_WASM_MODULE_PATH =
+  "node_modules/occt-import-js/dist/occt-import-js.wasm"
+const OCCT_WASM_CDN_URLS = [
+  "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.wasm",
+  "https://unpkg.com/occt-import-js@0.0.23/dist/occt-import-js.wasm",
+]
+const WASM_MAGIC_WORD = [0x00, 0x61, 0x73, 0x6d] as const
+const isNodeRuntime =
+  typeof process !== "undefined" && Boolean(process.versions?.node)
+type WasmCandidate = {
+  url: string
+  label: string
+  useAuthHeaders: boolean
+}
 
-let occtModulePromise: Promise<any> | null = null
-
-async function getOcctModule(): Promise<any> {
-  if (!occtModulePromise) {
-    // @ts-expect-error - occt-import-js uses CommonJS exports
-    const occtimportjs = (await import("occt-import-js")).default
-    occtModulePromise = occtimportjs()
+function getBrowserOrigin(): string | undefined {
+  if (typeof location === "undefined" || !location.origin) {
+    return undefined
   }
-  return occtModulePromise
+  return location.origin
+}
+
+function isValidWasmBinary(bytes: Uint8Array): boolean {
+  if (bytes.length < WASM_MAGIC_WORD.length) {
+    return false
+  }
+
+  return WASM_MAGIC_WORD.every((value, index) => bytes[index] === value)
+}
+
+function getAuthHeadersCacheKey(authHeaders?: AuthHeaders): string {
+  if (!authHeaders) return ""
+
+  return Object.entries(authHeaders)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}:${value}`)
+    .join("|")
+}
+
+async function fetchWasmBinary(
+  url: string,
+  headers?: AuthHeaders,
+): Promise<Uint8Array> {
+  const response = await fetch(url, { headers })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText}`)
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (!isValidWasmBinary(bytes)) {
+    throw new Error("Response was not a valid WebAssembly binary")
+  }
+
+  return bytes
+}
+
+async function getBrowserWasmCandidates(
+  projectBaseUrl?: string,
+): Promise<WasmCandidate[]> {
+  const candidates: WasmCandidate[] = []
+  const seenUrls = new Set<string>()
+  const browserOrigin = getBrowserOrigin()
+
+  const addCandidate = (
+    url: string,
+    label: string,
+    useAuthHeaders: boolean,
+  ): void => {
+    if (seenUrls.has(url)) return
+    seenUrls.add(url)
+    candidates.push({ url, label, useAuthHeaders })
+  }
+
+  if (projectBaseUrl) {
+    try {
+      const wasmUrl = await resolveModelUrl(
+        OCCT_WASM_MODULE_PATH,
+        projectBaseUrl,
+      )
+      addCandidate(wasmUrl, `resolved from ${projectBaseUrl}`, true)
+    } catch {
+      // continue to the next candidate strategy
+    }
+  }
+
+  if (browserOrigin) {
+    addCandidate(
+      new URL(
+        "/node_modules/occt-import-js/dist/occt-import-js.wasm",
+        browserOrigin,
+      ).toString(),
+      "browser origin /node_modules path",
+      false,
+    )
+  }
+
+  for (const cdnUrl of OCCT_WASM_CDN_URLS) {
+    addCandidate(cdnUrl, "CDN fallback", false)
+  }
+
+  return candidates
+}
+
+async function initializeOcctModuleForBrowser({
+  occtimportjs,
+  projectBaseUrl,
+  authHeaders,
+}: {
+  occtimportjs: any
+  projectBaseUrl?: string
+  authHeaders?: AuthHeaders
+}): Promise<any> {
+  const errors: string[] = []
+  const wasmCandidates = await getBrowserWasmCandidates(projectBaseUrl)
+
+  for (const candidate of wasmCandidates) {
+    try {
+      const wasmBinary = await fetchWasmBinary(
+        candidate.url,
+        candidate.useAuthHeaders ? authHeaders : undefined,
+      )
+      return await occtimportjs({ wasmBinary })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      errors.push(`${candidate.label} (${candidate.url}) failed: ${message}`)
+    }
+  }
+
+  throw new Error(
+    `Failed to initialize occt-import-js wasm. ${errors.join(" | ")}`,
+  )
+}
+
+async function getOcctModule({
+  projectBaseUrl,
+  authHeaders,
+}: {
+  projectBaseUrl?: string
+  authHeaders?: AuthHeaders
+}): Promise<any> {
+  const browserOrigin = getBrowserOrigin()
+  const cacheBase = projectBaseUrl ?? browserOrigin
+  const moduleCacheKey = isNodeRuntime
+    ? "node"
+    : `${cacheBase ?? "no-project-base-url"}::${getAuthHeadersCacheKey(authHeaders)}`
+
+  if (!occtModulePromiseByKey.has(moduleCacheKey)) {
+    const modulePromise = (async () => {
+      // @ts-ignore
+      const occtimportjs = (await import("occt-import-js")).default
+      return isNodeRuntime
+        ? occtimportjs()
+        : initializeOcctModuleForBrowser({
+            occtimportjs,
+            projectBaseUrl,
+            authHeaders,
+          })
+    })()
+    occtModulePromiseByKey.set(moduleCacheKey, modulePromise)
+    modulePromise.catch(() => {
+      occtModulePromiseByKey.delete(moduleCacheKey)
+    })
+  }
+  return occtModulePromiseByKey.get(moduleCacheKey)!
 }
 
 export async function loadSTEP({
@@ -52,7 +207,7 @@ export async function loadSTEP({
   const buffer = await response.arrayBuffer()
   const fileBuffer = new Uint8Array(buffer)
 
-  const occt = await getOcctModule()
+  const occt = await getOcctModule({ projectBaseUrl, authHeaders })
   const result = occt.ReadStepFile(fileBuffer, {
     linearUnit: "millimeter",
   })
